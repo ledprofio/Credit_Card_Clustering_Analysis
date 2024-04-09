@@ -1,0 +1,289 @@
+---
+title: "Clustering with Credit Card Customers"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+
+```{r q1}
+library(tidyverse) 
+library(tidymodels)     
+library(DataExplorer) 
+library(tidyclust)    
+library(dbscan)       
+library(factoextra)
+```
+
+# Load Data
+
+```{r q2}
+df <- read_csv("credit_card_customers.csv", show_col_types = FALSE)
+```
+
+# Data Cleaning
+
+```{r q3}
+df <- df %>%
+  mutate(
+    CLIENTNUM = as.character(CLIENTNUM),
+    Attrition_Flag = recode(Attrition_Flag,
+                            "Existing Customer" = "Retained",
+                            "Attrited Customer" = "Churned"),
+    Gender = factor(Gender, ordered = FALSE),
+    Marital_Status = factor(Marital_Status, ordered = FALSE),
+    Education_Level = as.integer(factor(Education_Level, levels = c("Unknown", "Uneducated", "High School",
+                                                         "College", "Graduate", "Post-Graduate",
+                                                         "Doctorate"), ordered = TRUE)),
+    Income_Category = as.integer(factor(Income_Category, levels = c("Unknown", "Less than $40K", 
+                                                          "$40K - $60K", "$60K - $80K", 
+                                                          "$80K - $120K", "$120K +"), ordered = TRUE)),
+    Card_Category = as.integer(factor(Card_Category, c("Blue", "Silver", "Gold", "Platinum"), ordered = TRUE))
+  )
+```
+
+# Data Exploration
+
+```{r q4}
+plot_intro(df)
+```
+
+## Bar plots of categorical variables
+
+```{r q5}
+plot_bar(df)
+```
+
+## Histogram of numeric variables
+
+```{r q6}
+plot_histogram(df)
+```
+
+### Data Exploration
+
+Total Transaction Count vs. Total Transaction Amount
+
+```{r q7}
+ggplot(df, aes(Total_Trans_Amt,Total_Trans_Ct)) + geom_point()
+
+```
+
+# K-Means
+
+## Recipe
+
+```{r q8}
+kmeans_recipe <- recipe(~Income_Category + Education_Level + Total_Trans_Amt + Total_Trans_Ct, data=df) %>%
+   step_normalize(all_numeric_predictors()) 
+```
+
+## Model and Workflow
+
+Model Creation
+
+```{r q9}
+kmeans_model <- k_means(num_clusters = 3) |> 
+  set_engine("stats")
+```
+
+Workflow Creation and Data Fitting
+
+```{r q10}
+set.seed(11) 
+
+kmeans_model <- k_means(num_clusters = 3) %>% 
+  set_engine("stats")
+  
+kmeans_workflow <- workflow() %>%
+    add_recipe(kmeans_recipe) %>%
+    add_model(kmeans_model) %>%
+    fit(data = df)
+
+kmeans_summary <- kmeans_workflow %>% 
+  extract_fit_summary()
+
+df <- df |>
+  mutate(KMeansCluster=kmeans_summary$cluster_assignments)
+```
+
+## K-Means Clusters Visualization
+
+```{r q11}
+ggplot(df, aes(x = Total_Trans_Amt, y = Total_Trans_Ct, color = KMeansCluster)) +
+  geom_point() +
+  labs(title = "Total Transaction Amount vs. Total Transaction Count | K-Means",
+       x = "Total Transaction Amount",
+       y = "Total Transaction Count") +
+  theme_minimal()
+```
+
+## Summary Statistics by Cluster
+
+```{r q12}
+df |>
+  group_by(KMeansCluster) |>
+  summarise(count=n(), across(where(is.numeric), mean)) |>
+  select(KMeansCluster, Total_Trans_Ct, Total_Trans_Amt, Total_Revolving_Bal, count)
+```
+
+## Explore metrics by cluster
+
+```{r q13}
+ggplot(df, aes(x = KMeansCluster, y = Total_Trans_Ct)) +
+  geom_boxplot() +
+  labs(title = "Clusters by Total Transaction Count", x = "Cluster", y = "Total Transaction Count") +
+  theme_minimal()
+```
+
+```{r q14}
+ggplot(df, aes(x = KMeansCluster, y = Total_Trans_Amt)) +
+  geom_boxplot() +
+  labs(title = "Clusters by Total Transaction Amount", x = "Cluster", y = "Total Transaction Amount") +
+  theme_minimal()
+```
+
+## Cluster Distribution by Categorical Variables
+
+```{r q15}
+plot_bar(df, by = "KMeansCluster")
+```
+
+# Elbow Method
+
+## Data Preparation
+
+```{r q16}
+mini_df <- df |> 
+  select(Total_Trans_Amt, Total_Trans_Ct) |>
+  mutate(across(where(is.numeric), scale))
+```
+
+```{r q17}
+fviz_nbclust(mini_df, kmeans, method = "wss") # weighted sum of squares / elbow
+```
+
+# Elbow Method (Manual)
+
+```{r q18}
+
+max_k = 10
+wss = numeric(max_k)
+
+for(k in 1:max_k) {
+  kmeans_model <- k_means(num_clusters = k) %>% 
+  set_engine("stats")
+  
+  fit_workflow <- workflow() %>%
+      add_recipe(kmeans_recipe) %>%
+      add_model(kmeans_model) %>%
+      fit(data = df) %>%
+      extract_fit_parsnip()
+  
+  wss[k] <- fit_workflow$fit$tot.withinss
+}
+```
+
+## Elbow Plot
+
+```{r q19}
+elbow_data <- data.frame(
+  k = 1:length(wss),
+  wss = wss
+)
+
+ggplot(elbow_data, aes(x = k, y = wss)) +
+  geom_line() +
+  geom_point() +
+  scale_x_continuous(breaks = seq(1, max_k, 1)) +
+  labs(title = 'Elbow Method Plot',
+       x = 'Number of clusters (k)',
+       y = 'Total within-cluster sum of squares (WSS)') +
+  theme_minimal()
+```
+
+## Method 2: Silhouette Method
+
+```{r q20}
+fviz_nbclust(mini_df, kmeans, method='silhouette')
+```
+
+### Save clusters to CSV file
+
+```{r q21}
+write_csv(df, "credit_card_customers_kmeans.csv")
+```
+
+```{r q22}
+cluster_recipe <- recipe(~Income_Category + Education_Level + Total_Trans_Amt + Total_Trans_Ct, data=df) %>%
+  step_normalize(all_numeric_predictors()) 
+```
+
+### Hierarchical Clustering
+
+```{r q23}
+hc_model <- hier_clust(linkage_method = "ward.D2") 
+
+hc_workflow <- workflow() |>
+    add_recipe(cluster_recipe) |>
+    add_model(hc_model) |>
+    fit(data = df)
+```
+
+## Plot the dendrogram
+
+```{r q24}
+hc_workflow |> extract_fit_engine() |> plot()
+```
+
+```{r q25}
+hc_summary <- hc_workflow |> 
+  extract_fit_summary(num_clusters=3)
+
+hc_summary |> str()
+```
+
+```{r q26}
+fit_hc <- hc_workflow |> extract_fit_engine()
+
+df$HierClusters <- cutree(fit_hc, k = 3)
+df$HierClusters <- factor(paste("Cluster_", df$HierClusters, sep = ""), ordered = FALSE)
+
+```
+
+## Plot the Hierarchical Clusters
+
+```{r q27}
+ggplot(df, aes(x = Total_Trans_Amt, y = Total_Trans_Ct, color = HierClusters)) +
+  geom_point() +
+  labs(title = "Total Transaction Amount Vs. Total Transaction Count",
+       x = "Total Transaction Amount",
+       y = "Total Transaction Count") +
+  theme_minimal()
+```
+
+```{r q28}
+ggplot(df, aes(x = Total_Trans_Amt, y = Total_Trans_Ct, color=Total_Relationship_Count)) + 
+  geom_point() + 
+  facet_wrap(~ HierClusters) + 
+  labs(title = "Total Transaction Amount Vs. Total Transaction Count",
+       x = "Total Transaction Amount",
+       y = "Total Transaction Count") 
+```
+
+# Comparing KMeans and Hierarchical Clusters
+
+```{r q29}
+conf_mat(df, truth = KMeansCluster,
+         estimate = HierClusters)
+```
+
+## Plot Hierarchical Clustering vs. K-Means
+
+```{r q30}
+ggplot(df, aes(x = Total_Trans_Amt, y = Total_Trans_Ct, color = KMeansCluster, shape=HierClusters)) +
+  geom_point() +
+  labs(title = "Total Transaction Amount Vs. Total Transaction Count Clustering Comparison | K-Means vs. Hierarchical Clustering",
+       x = "Total Transaction Amount",
+       y = "Total Transaction Count") +
+  theme_minimal()
+```
